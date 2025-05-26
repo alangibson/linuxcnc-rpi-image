@@ -1,0 +1,107 @@
+
+Kernel <6.12
+============
+
+export KERNEL=kernel8 \
+    ARCH=arm64
+
+sudo apt install \
+    git bc bison flex libssl-dev make \
+    libncurses5-dev \
+    raspberrypi-kernel-headers
+
+git clone --depth 1 --branch rpi-6.10.y https://github.com/raspberrypi/linux
+
+wget -c https://mirrors.edge.kernel.org/pub/linux/kernel/projects/rt/6.10/patch-6.10-rc6-rt11.patch.xz
+xz -d patch-6.10-rc6-rt11.patch.xz
+
+pushd linux
+patch -p1 < ../patch-6.10-rc6-rt11.patch
+
+# Generate .config
+# TODO should we just copy over the old one?
+make bcm2711_defconfig
+
+# Configure
+# make menuconfig
+echo 'CONFIG_PREEMPT=n' >> .config
+echo 'CONFIG_PREEMPT_RT=y' >> .config
+echo 'CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE=y' >> .config
+echo 'CONFIG_HZ_1000=y' >> .config
+echo 'CONFIG_HZ_PERIODIC=y' >> .config
+echo 'CONFIG_LEDS_TRIGGER_CPU=n' >> .config
+echo 'CONFIG_EFI_DISABLE_RUNTIME=y' >> .config
+echo 'CONFIG_NTP_PPS=y' >> .config
+echo 'CONFIG_RTC_INTF_DEV_UIE_EMUL=y' >> .config
+echo 'CONFIG_VIRT_CPU_ACCOUNTING_GEN=y' >> .config
+# ~/linux/scripts/diffconfig .config .config.bak
+
+# Build and install
+make prepare
+make -j4 Image.gz modules dtbs
+make CFLAGS='-O3 -march=native' -j4 Image.gz modules dtbs
+sudo make modules_install
+sudo cp arch/arm64/boot/Image /boot/firmware/$KERNEL.img
+sudo cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware
+sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
+sudo cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/
+
+# Enable SPI1
+# To set pins, use "dtoverlay=spi1-3cs,cs0_pin=05,cs1_pin=06,cs2_pin=16"
+echo "dtoverlay=spi1-3cs" | sudo tee -a /boot/firmware/config.txt
+
+# Install Linuxcnc
+curl -O https://www.linuxcnc.org/dists/bookworm/2.9-uspace/binary-arm64/linuxcnc-uspace_2.9.2_arm64.deb
+sudo dpkg -i linuxcnc-uspace_2.9.2_arm64.deb
+
+sudo apt install -y python3-gst-1.0 dunst \
+    imagemagick \
+    python3-lxml source-highlight w3c-linkchecker xsltproc \
+    texlive-extra-utils texlive-font-utils texlive-fonts-recommended \
+    texlive-lang-cyrillic texlive-lang-french texlive-lang-german \
+    texlive-lang-polish texlive-lang-spanish texlive-xetex \
+    texlive-latex-recommended dblatex asciidoc-dblatex \
+    libusb-1.0-0-dev graphviz inkscape texlive-lang-european
+    tclreadline libxml2 libxml2-dev python3-configobj python3-numpy \
+    libgtksourceview-3.0-dev python3-cairo python3-gi-cairo python3-opengl \
+    gir1.2-gtksource-3.0 libglew2.2 mesa-utils
+
+# Change desktop manager
+sudo apt install -y xfce4 xserver-xorg
+# sudo apt -y install task-xfce-desktop
+# TODO Switch to X11 from Wayland
+sudo raspi-config
+# TODO change greeter-session=pi-greeter to greeter-session=lightdm-gtk-greeter.conf
+sudo nano /etc/lightdm/lightdm.conf
+sudo systemctl restart lightdm
+# TODO select XFCE from the dropdown menu in the top right corner
+
+# None of this worked
+# echo "xfce4-session" > ~/.xsession
+# echo "exec startxfce4" > ~/.xinitrc
+# sudo update-alternatives --set x-session-manager /usr/bin/startxfce4
+# sudo update-alternatives --set x-window-manager /usr/bin/xfwm4
+# sudo update-alternatives --install /usr/bin/x-session-manager x-session-manager /usr/bin/startxfce4 100
+
+# Test performance
+sudo apt install rt-tests
+sudo cyclictest --mlockall --smp --priority=80 --interval=200 --distance=0
+
+# Performance tuning
+sudo systemctl disable --now bluetooth cron cups cups-browsed triggerhappy ModemManager cups.path cups.socket triggerhappy.socket
+
+# Add these kernel params
+# FIXME splits over newline
+echo " processor.max_cstate=1 isolcpus=2,3 workqueue.power_efficient=0" | sudo tee -a /boot/firmware/cmdline.txt
+
+# Test performance again
+sudo cyclictest --mlockall --smp --priority=80 --interval=200 --distance=0
+
+References
+----------
+
+How to compile a custom Raspberry Pi OS kernel 
+November 6, 2023
+https://techexplorations.com/raspberry-pi/how-to-compile-a-custom-raspberry-pi-os-kernel/
+
+https://www.pragmaticlinux.com/2020/11/install-the-xfce-desktop-on-your-raspberry-pi/
