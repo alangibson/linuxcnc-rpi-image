@@ -1,43 +1,70 @@
 LinuxCNC >=2.9.3 on Rapsberry Pi OS with Kernel =6.12
 =====================================================
 
-# Prepare Raspberry Pi
+# Install OS
 
 First install Raspberry Pi OS on SD card and boot it.
 
+# Prepare Raspberry Pi
+
+Then run on the Raspberry Pi
+
 ```bash
-sudo apt update
-sudo apt upgrade
-sudo rpi-update next
+git clone https://github.com/alangibson/linuxcnc-rpi-image
+cd https://github.com/alangibson/linuxcnc-rpi-image
 ```
 
-# Realtime kernel
+```bash
+sudo apt update
+sudo apt -y upgrade
+sudo WANT_64BIT_RT=1 rpi-update rpi-6.12.y
+```
+
+# Compile Kernel
+
+## Download kernel source
 
 ```bash
-sudo apt install git bc bison flex libssl-dev make libncurses5-dev raspberrypi-kernel-headers
 git clone --depth 1 --branch rpi-6.12.y https://github.com/raspberrypi/linux
 cd linux
 ```
 
-## Configure
+## Prepare compiler
 
-### RPi 4
+### Cross-compile on Debian/Ubuntu
+
+```bash
+sudo apt install bc bison flex libssl-dev make libc6-dev libncurses5-dev
+sudo apt install crossbuild-essential-arm64
+
+MAKE="make -j12 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-"
+```
+
+### Compile on Raspberry Pi
+
+```bash
+sudo apt install git bc bison flex libssl-dev make libncurses5-dev raspberrypi-kernel-headers
+
+MAKE="make -j6"
+```
+
+### Generate base kernel config
+
+#### RPi 4
 
 ```bash
 KERNEL=kernel8
-make bcm2711_defconfig
+$MAKE bcm2711_defconfig
 ```
 
-### RPi 5
+#### RPi 5
 
 ```bash
 KERNEL=kernel_2712
-make bcm2712_defconfig
+$MAKE bcm2712_defconfig
 ```
 
-### Configure kernel
-
-See https://ubuntu.com/blog/real-time-kernel-tuning
+### Custom kernel config
 
 ```bash
 cp .config .config.old
@@ -58,11 +85,12 @@ echo 'CONFIG_RTC_INTF_DEV_UIE_EMUL=y' >> .config
 echo 'CONFIG_VIRT_CPU_ACCOUNTING_GEN=y' >> .config
 echo 'CONFIG_LOCALVERSION=-v8-16k-NTP' >> .config
 echo 'CONFIG_PPS_CLIENT_GPIO=y' >> .config
-~/linux/scripts/diffconfig
+./scripts/diffconfig
 ```
 
+See https://ubuntu.com/blog/real-time-kernel-tuning
+
 ### Patch to create /sys/kernel/realtime
-https://forum.linuxcnc.org/38-general-linuxcnc-questions/54542-real-time-kerel-not-detected-on-patched-6-12?start=10#315437
 
 ```bash
 echo 'CONFIG_CRASH_DUMP=y' >> .config
@@ -71,48 +99,59 @@ echo 'CONFIG_KEXEC_CORE=y' >> .config
 echo 'CONFIG_PROC_KCORE=y' >> .config
 echo 'CONFIG_PROC_FS=y' >> .config
 echo 'CONFIG_MMU=y' >> .config
-git apply sys-kernel-realtime.patch
+git apply ../sys-kernel-realtime.patch
 ```
 
-### Build RT kernel
-https://www.raspberrypi.com/documentation/computers/linux_kernel.html#building
+https://forum.linuxcnc.org/38-general-linuxcnc-questions/54542-real-time-kerel-not-detected-on-patched-6-12?start=10#315437
+
+### Compile Realtime kernel
 
 ```bash
-make prepare
-make -j6 Image.gz modules dtbs 
-sudo make -j6 modules_install
+# make prepare
+$MAKE Image modules dtbs
 ```
 
-# Install kernel
+### Install kernel
+
+#### To SD card
 
 ```bash
-sudo cp /boot/firmware/$KERNEL.img /boot/firmware/$KERNEL-backup.img
-sudo cp arch/arm64/boot/Image.gz /boot/firmware/$KERNEL.img
-sudo cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware/
-sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
-sudo cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/
+ROOT="/media/alangibson/rootfs"
+BOOT="/media/alangibson/bootfs"
+
+sudo env PATH=$PATH $MAKE INSTALL_MOD_PATH="$ROOT" modules_install
+
+sudo cp -v $BOOT/$KERNEL.img $BOOT/$KERNEL-backup.img
+sudo cp -v arch/arm64/boot/Image $BOOT/$KERNEL.img
+sudo cp -v arch/arm64/boot/dts/broadcom/*.dtb $BOOT/
+sudo cp -v arch/arm64/boot/dts/overlays/*.dtb* $BOOT/overlays/
+sudo cp -v arch/arm64/boot/dts/overlays/README $BOOT/overlays/
 ```
 
-# Performance tuning
-
-https://raspberrytips.com/disable-wifi-raspberry-pi/
-Add to bottom of /boot/firmware/config.txt
+#### On Raspberry Pi
 
 ```bash
-dtoverlay=disable-wifi
-dtoverlay=disable-bt
-```
+BOOT="/boot"
 
-```bash
-sudo systemctl disable cups-browsed.service cups.path cups.service cups.socket
-sudo systemctl disable wpa_supplicant
-sudo systemctl disable bluetooth
-sudo systemctl disable hciuart
-echo " processor.max_cstate=1 isolcpus=2,3 workqueue.power_efficient=0" | sudo tee -a /boot/firmware/cmdline.txt
+sudo $MAKE modules_install
+
+sudo cp $BOOT/firmware/$KERNEL.img $BOOT/firmware/$KERNEL-backup.img
+sudo cp arch/arm64/boot/Image.gz $BOOT/firmware/$KERNEL.img
+sudo cp arch/arm64/boot/dts/broadcom/*.dtb $BOOT/firmware/
+sudo cp arch/arm64/boot/dts/overlays/*.dtb* $BOOT/firmware/overlays/
+sudo cp arch/arm64/boot/dts/overlays/README $BOOT/firmware/overlays/
 sudo reboot
 ```
 
+
+
+
+
+
+
 # Install LinuxCNC
+
+## Install using apt
 
 ```bash
 curl -O https://www.linuxcnc.org/linuxcnc-install.sh
@@ -131,44 +170,104 @@ sudo apt install -y linuxcnc-uspace-dev \
     gir1.2-gtksource-3.0 libglew2.2 mesa-utils
 ```
 
+## Create shortcut to config
+
+```bash
+sudo nano /usr/share/applications/cnc.desktop
+```
+Paste this:
+```
+[Desktop Entry]
+Comment=
+Terminal=false
+Name=Darkstar CNC
+Exec=sh -c "taskset -c 2,3 linuxcnc $HOME/hotshot-driver-linuxcnc/my-plasma/my-plasma.ini"
+Type=Application
+Icon=/usr/share/linuxcnc/linuxcncicon.png
+Categories=Utility;
+```
+
+```bash
+sudo chmod +x /usr/share/applications/cnc.desktop
+```
+
+Add .desktop file to user desktop
+```bash
+cp /usr/share/applications/cnc.desktop "$HOME/Desktop/"
+```
+
+TODO Add .desktop file to launcher. 
+API is ridiculous so just do it manually.
+
+
 # Hotshot Driver
 
-## For bcm2835 driver
+### Enable /dev/mem access
 
 Enable access to /dev/mem by anyone in kmem group
 
 ```bash
-sudo apt-get install libcap2 libcap-dev
+sudo apt -y install libcap2 libcap-dev
 echo 'SUBSYSTEM=="mem", KERNEL=="mem", GROUP="kmem", MODE="0660"' | sudo tee /etc/udev/rules.d/98-mem.rules
 sudo usermod -a -G kmem $USER
-```
-
-Enable /dev/mem access
-
-```bash
 sudo setcap cap_sys_rawio+ep /usr/bin/linuxcnc
 ```
 
-## Copy driver code
+### Compile
 
 ```bash
 git clone https://github.com/alangibson/hotshot-driver-linuxcnc
-scp -r hotshot-driver-linuxcnc/ operator@plasma.local:/home/operator/
-```
-
-## Compile
-
-```bash
-ssh operator@plasma.local
 cd hotshot-driver-linuxcnc
 ./hotshot.install.sh
 ```
 
+
+
+
+
+
+# Performance tuning
+
+```bash
+uname -a
+```
+
+Add to bottom of /boot/firmware/config.txt
+
+```bash
+dtoverlay=disable-wifi
+dtoverlay=disable-bt
+```
+
+```bash
+sudo systemctl disable cups-browsed.service cups.path cups.service cups.socket
+sudo systemctl disable wpa_supplicant
+sudo systemctl disable bluetooth
+sudo systemctl disable hciuart
+sudo systemctl stop apache2 systemd-timesyncd.service wayvnc.service \
+    systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+    systemd-journald.service systemd-journald.socket systemd-journald-audit.socket systemd-journald-dev-log.socket
+```
+
+```bash
+echo " processor.max_cstate=1 isolcpus=2,3 workqueue.power_efficient=0" | sudo tee -a /boot/firmware/cmdline.txt
+sudo reboot
+```
+
+https://raspberrytips.com/disable-wifi-raspberry-pi/
+
 # Performance Test
 
-## Test performance
+### Test performance
 
 ```bash
 sudo apt install rt-tests
 sudo cyclictest --mlockall --smp --priority=80 --interval=30 --distance=0
 ```
+
+### See if performance is throttled
+
+```bash
+vcgencmd get_throttled
+```
+
